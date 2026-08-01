@@ -78,8 +78,10 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
 pub(crate) fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {
     let requested_tool_mode = requested_tool_mode(turn_context);
     if !turn_context.code_mode_available
-        && requested_tool_mode == ToolMode::CodeMode
-        && !turn_context.config.code_mode.disable_in_process_fallback
+        && ((requested_tool_mode == ToolMode::CodeMode
+            && !turn_context.config.code_mode.disable_in_process_fallback)
+            || (requested_tool_mode == ToolMode::CodeModeOnly
+                && cfg!(all(target_os = "linux", target_arch = "x86"))))
     {
         ToolMode::Direct
     } else {

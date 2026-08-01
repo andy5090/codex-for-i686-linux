@@ -231,6 +231,7 @@ async fn remote_tool_mode_selector_overrides_feature_flags() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "x86")))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_code_mode_only_selector_fails_closed_when_host_is_disabled() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -267,6 +268,44 @@ async fn remote_code_mode_only_selector_fails_closed_when_host_is_disabled() -> 
             .iter()
             .any(|warning| warning.contains("Code mode will fail closed")),
         "code-mode-only should explain that it fails closed: {:?}",
+        response.warnings
+    );
+
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_code_mode_only_selector_uses_direct_tools_when_host_is_unavailable() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let mut model = remote_model("test-tool-mode-code-mode-only-host-unavailable");
+    model.tool_mode = Some(ToolMode::CodeModeOnly);
+    let response = response_for_remote_model(model, |config| {
+        config
+            .features
+            .disable(Feature::CodeModeHost)
+            .expect("code-mode host should be disabled");
+    })
+    .await?;
+
+    let tools = tool_names(&response.body);
+    assert!(
+        tools.iter().any(|name| name == "exec_command"),
+        "i686 must expose direct shell tools when Code Mode is unavailable: {tools:?}"
+    );
+    assert!(
+        tools.iter().all(|name| {
+            name != codex_code_mode::PUBLIC_TOOL_NAME && name != codex_code_mode::WAIT_TOOL_NAME
+        }),
+        "i686 must not expose unavailable Code Mode tools: {tools:?}"
+    );
+    assert!(
+        response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Falling back to direct tools")),
+        "i686 should explain the direct-tools fallback: {:?}",
         response.warnings
     );
 

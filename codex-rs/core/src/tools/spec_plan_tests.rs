@@ -1485,6 +1485,23 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
     );
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86"))]
+#[tokio::test]
+async fn unavailable_code_mode_only_falls_back_to_direct_tools_on_i686() {
+    let plan = probe(|turn| {
+        set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
+        turn.model_info.tool_mode = Some(ToolMode::CodeModeOnly);
+        turn.code_mode_available = false;
+    })
+    .await;
+
+    plan.assert_visible_contains(&["exec_command", "write_stdin"]);
+    plan.assert_visible_lacks(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+    ]);
+}
+
 #[tokio::test]
 async fn code_mode_buffered_exec_updates_exec_description() {
     let plan = probe(|turn| {
