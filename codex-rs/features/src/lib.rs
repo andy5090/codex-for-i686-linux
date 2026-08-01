@@ -913,7 +913,8 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::CodeModeHost,
         key: "code_mode_host",
         stage: Stage::Stable,
-        default_enabled: true,
+        // rusty_v8 does not publish a 32-bit Linux host binary.
+        default_enabled: !cfg!(all(target_os = "linux", target_arch = "x86")),
     },
     FeatureSpec {
         id: Feature::CodeModeOnly,

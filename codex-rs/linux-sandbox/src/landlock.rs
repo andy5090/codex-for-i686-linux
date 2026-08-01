@@ -2,6 +2,7 @@
 //!
 //! Filesystem restrictions are enforced by bubblewrap in `linux_run_main`.
 //! Landlock helpers remain available here as legacy/backup utilities.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -21,14 +22,23 @@ use landlock::Compatible;
 use landlock::Ruleset;
 use landlock::RulesetAttr;
 use landlock::RulesetCreatedAttr;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use seccompiler::BpfProgram;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use seccompiler::SeccompAction;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use seccompiler::SeccompCmpArgLen;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use seccompiler::SeccompCmpOp;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use seccompiler::SeccompCondition;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use seccompiler::SeccompFilter;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use seccompiler::SeccompRule;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use seccompiler::TargetArch;
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use seccompiler::apply_filter;
 
 /// Apply sandbox policies inside this thread so only the child inherits
@@ -166,6 +176,7 @@ fn install_filesystem_landlock_rules_on_current_thread(
 ///
 /// The filter is applied to the current thread so only the sandboxed child
 /// inherits it.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn install_network_seccomp_filter_on_current_thread(
     mode: NetworkSeccompMode,
 ) -> std::result::Result<(), SandboxErr> {
@@ -251,13 +262,7 @@ fn install_network_seccomp_filter_on_current_thread(
         rules,
         SeccompAction::Allow,                     // default – allow
         SeccompAction::Errno(libc::EPERM as u32), // when rule matches – return EPERM
-        if cfg!(target_arch = "x86_64") {
-            TargetArch::x86_64
-        } else if cfg!(target_arch = "aarch64") {
-            TargetArch::aarch64
-        } else {
-            unimplemented!("unsupported architecture for seccomp filter");
-        },
+        seccomp_target_arch(),
     )?;
 
     let prog: BpfProgram = filter.try_into()?;
@@ -265,6 +270,36 @@ fn install_network_seccomp_filter_on_current_thread(
     apply_filter(&prog)?;
 
     Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+fn seccomp_target_arch() -> TargetArch {
+    TargetArch::x86_64
+}
+
+#[cfg(target_arch = "aarch64")]
+fn seccomp_target_arch() -> TargetArch {
+    TargetArch::aarch64
+}
+
+/// The seccompiler crate does not expose Linux's `AUDIT_ARCH_I386`.
+///
+/// On 32-bit x86, bubblewrap still enforces the filesystem policy and uses a
+/// separate network namespace whenever network access is restricted. We skip
+/// the additional syscall filter instead of making the entire Linux sandbox
+/// unavailable on i686.
+#[cfg(target_arch = "x86")]
+fn install_network_seccomp_filter_on_current_thread(
+    _mode: NetworkSeccompMode,
+) -> std::result::Result<(), SandboxErr> {
+    Ok(())
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))]
+fn install_network_seccomp_filter_on_current_thread(
+    _mode: NetworkSeccompMode,
+) -> std::result::Result<(), SandboxErr> {
+    unimplemented!("unsupported architecture for seccomp filter");
 }
 
 #[cfg(test)]

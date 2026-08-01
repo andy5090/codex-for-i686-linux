@@ -1,0 +1,9 @@
+prefix=@PREFIX@
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libcap
+Description: POSIX capabilities library
+Version: 2.78
+Libs: -L${libdir} -lcap
+Cflags: -I${includedir}

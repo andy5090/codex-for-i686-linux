@@ -1,81 +1,120 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# Codex CLI for i686 Linux
 
----
+This repository provides an unofficial, community-maintained build of
+[OpenAI Codex CLI](https://github.com/openai/codex) for 32-bit x86 Linux.
+It is intended primarily for Debian-based distributions such as antiX running
+on `i686` hardware.
 
-## Quickstart
+The upstream project does not publish an i686 binary. This fork adds the
+target-specific compatibility changes, packaging scripts, and release assets
+needed to install Codex on supported 32-bit x86 systems.
 
-### Installing and running Codex CLI
+## Install
 
-Run the following on Mac or Linux to install Codex CLI:
+Run this as the user who will use Codex; root privileges are not required:
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```sh
+curl -fsSL \
+  https://github.com/andy5090/codex-for-i686-linux/releases/download/i686-latest/install-codex-i686.sh \
+  | sh
 ```
 
-Run the following on Windows to install Codex CLI:
+The installer downloads the statically linked i686 package, verifies its
+SHA-256 checksum, and installs it under:
 
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+- executable: `~/.local/bin/codex`
+- release files: `~/.local/share/codex-i686/releases/<build-id>`
+
+Make sure `~/.local/bin` is in `PATH`, then sign in and start Codex:
+
+```sh
+codex login --device-auth
+codex
 ```
 
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+If you prefer to inspect the installer before running it:
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
+```sh
+curl -fLO \
+  https://github.com/andy5090/codex-for-i686-linux/releases/download/i686-latest/install-codex-i686.sh
+less install-codex-i686.sh
+sh install-codex-i686.sh
 ```
 
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
+## Platform support
+
+- 32-bit x86 Linux (`i386` through `i686`) with an SSE2-capable processor
+- Debian-based distributions, with antiX as the primary real-hardware target
+- statically linked musl binaries for Codex, ripgrep, and bubblewrap
+- per-user installation without replacing distribution packages
+
+JavaScript Code Mode is unavailable because `rusty_v8` does not publish a
+32-bit Linux host binary. When a model requests `CodeModeOnly`, this build
+falls back to direct tools so shell execution, file editing, and normal Codex
+workflows remain available.
+
+You may see a warning that Code Mode is unavailable and direct tools are being
+used. That warning is expected. A warning that Code Mode "will fail closed"
+usually means an older build is still being executed.
+
+## Test shell execution
+
+```sh
+codex exec -m gpt-5.6-sol --skip-git-repo-check \
+  "Use the shell to run uname -m and pwd, then show the results."
 ```
 
-Codex CLI can also be installed via the following package managers:
+If the shell tool is available but bubblewrap fails, repeat the test only in a
+trusted directory with sandboxing disabled:
 
-```shell
-# Install using npm
-npm install -g @openai/codex
+```sh
+codex exec -m gpt-5.6-sol \
+  --dangerously-bypass-approvals-and-sandbox \
+  "Use the shell to run uname -m and pwd, then show the results."
 ```
 
-```shell
-# Install using Homebrew
-brew install --cask codex
+If only the second command works, report the bubblewrap error and the output of
+`uname -a`; that is a kernel sandbox compatibility issue rather than a Code
+Mode issue.
+
+## Codex Apps MCP
+
+`codex_apps` is a remote HTTPS MCP service and is independent of the i686
+binary format. If it is not needed, it can be disabled in
+`~/.codex/config.toml`:
+
+```toml
+[features]
+apps = false
 ```
 
-Then simply run `codex` to get started.
+For connection failures, include the complete
+`MCP client for codex_apps failed to start: ...` message in a bug report.
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+## Build locally
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+The native macOS cross-build path uses Zig:
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+```sh
+./scripts/i686-linux/build-package-zig.sh
+```
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+A Docker or Podman build path is also available:
 
-</details>
+```sh
+./scripts/i686-linux/build-package.sh
+```
 
-### Using Codex with your ChatGPT plan
+Packages and checksum files are written to `dist/`. The scripts assign dirty
+local builds a source-state build ID so installing a rebuilt package does not
+silently reuse an older release directory.
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+## Upstream and support status
 
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+This is not an official OpenAI distribution. General Codex documentation and
+non-i686 development happen in [openai/codex](https://github.com/openai/codex).
+Changes in this repository focus on maintaining the i686 Linux build and may
+need adjustment as upstream evolves.
 
-## Docs
-
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
-
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+The project remains licensed under the [Apache-2.0 License](LICENSE), with the
+upstream notices retained in [NOTICE](NOTICE).

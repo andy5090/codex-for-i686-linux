@@ -49,6 +49,8 @@ mod app_cmd;
 mod desktop_app;
 mod doctor;
 mod exec_server_telemetry;
+#[cfg(all(target_arch = "x86", target_os = "linux"))]
+mod i686_atomic;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod plugin_cmd;
