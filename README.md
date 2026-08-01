@@ -2,8 +2,7 @@
 
 This repository provides an unofficial, community-maintained build of
 [OpenAI Codex CLI](https://github.com/openai/codex) for 32-bit x86 Linux.
-It is intended primarily for Debian-based distributions such as antiX running
-on `i686` hardware.
+It targets Debian-based distributions running on `i686` hardware.
 
 The upstream project does not publish an i686 binary. This fork adds the
 target-specific compatibility changes, packaging scripts, and release assets
@@ -43,8 +42,9 @@ sh install-codex-i686.sh
 
 ## Platform support
 
-- 32-bit x86 Linux (`i386` through `i686`) with an SSE2-capable processor
-- Debian-based distributions, with antiX as the primary real-hardware target
+- Debian-based 32-bit x86 Linux (`i386` through `i686`)
+- SSE2-capable processor
+- Tested on antiX Linux running on real i686 hardware
 - statically linked musl binaries for Codex, ripgrep, and bubblewrap
 - per-user installation without replacing distribution packages
 
