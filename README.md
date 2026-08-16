@@ -31,6 +31,16 @@ codex login --device-auth
 codex
 ```
 
+To update an existing installation to the latest i686 release:
+
+```sh
+codex-i686-update
+```
+
+The update command downloads the current `i686-latest` installer, verifies the
+package checksum through that installer, installs the new build alongside the
+previous release, and switches `~/.local/bin/codex` to the new build.
+
 If you prefer to inspect the installer before running it:
 
 ```sh

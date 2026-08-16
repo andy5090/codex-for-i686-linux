@@ -20,6 +20,10 @@ After installation:
     codex login --device-auth
     codex
 
+Update to the latest i686 release:
+
+    codex-i686-update
+
 This package is statically linked and includes 32-bit builds of ripgrep and
 bubblewrap. JavaScript Code Mode is disabled because rusty_v8 does not support
 32-bit Linux. Normal Codex chat, direct tools, file editing, and shell execution

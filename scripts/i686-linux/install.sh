@@ -8,6 +8,7 @@ BIN_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
 RELEASES_DIR="$DATA_ROOT/releases"
 RELEASE_DIR="$RELEASES_DIR/$BUILD_ID"
 CODEX_LINK="$BIN_DIR/codex"
+UPDATE_LINK="$BIN_DIR/codex-i686-update"
 
 case "$(uname -m)" in
     i386 | i486 | i586 | i686 | x86_64)
@@ -26,6 +27,7 @@ if [ "${CODEX_I686_SKIP_CPU_CHECK:-0}" != 1 ] &&
 fi
 
 if [ ! -x "$PACKAGE_DIR/bin/codex" ] ||
+    [ ! -x "$PACKAGE_DIR/bin/codex-i686-update" ] ||
     [ ! -x "$PACKAGE_DIR/codex-path/rg" ] ||
     [ ! -x "$PACKAGE_DIR/codex-resources/bwrap" ]; then
     echo "The Codex i686 package is incomplete." >&2
@@ -59,10 +61,18 @@ if [ -e "$CODEX_LINK" ] && [ ! -L "$CODEX_LINK" ]; then
     exit 1
 fi
 
+if [ -e "$UPDATE_LINK" ] && [ ! -L "$UPDATE_LINK" ]; then
+    echo "Refusing to replace the existing non-symlink: $UPDATE_LINK" >&2
+    echo "Set CODEX_INSTALL_DIR to another directory and run install.sh again." >&2
+    exit 1
+fi
+
 ln -sfn "$RELEASE_DIR/bin/codex" "$CODEX_LINK"
+ln -sfn "$RELEASE_DIR/bin/codex-i686-update" "$UPDATE_LINK"
 
 "$CODEX_LINK" --version
 echo "Installed Codex i686 at $CODEX_LINK"
+echo "Update command: $UPDATE_LINK"
 case ":$PATH:" in
     *":$BIN_DIR:"*)
         echo "Run: codex login --device-auth"

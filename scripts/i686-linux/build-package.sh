@@ -187,6 +187,9 @@ install -m 0755 "$BINARY_DIR/bwrap" "$STAGE/codex-resources/bwrap"
 install -m 0755 "$RG_ROOT/bin/rg" "$STAGE/codex-path/rg"
 "$STRIP" "$STAGE/bin/codex" "$STAGE/codex-path/rg"
 
+install -m 0755 \
+    /work/scripts/i686-linux/update.sh \
+    "$STAGE/bin/codex-i686-update"
 install -m 0755 /work/scripts/i686-linux/install.sh "$STAGE/install.sh"
 install -m 0644 /work/scripts/i686-linux/README.txt "$STAGE/README.txt"
 printf "%s\n" "$BUILD_ID" >"$STAGE/BUILD-ID"

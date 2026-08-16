@@ -205,6 +205,9 @@ install -m 0755 "$RG_ROOT/bin/rg" "$STAGE/codex-path/rg"
 strip_binary "$STAGE/bin/codex"
 strip_binary "$STAGE/codex-path/rg"
 
+install -m 0755 \
+    "$SCRIPT_DIR/update.sh" \
+    "$STAGE/bin/codex-i686-update"
 install -m 0755 "$SCRIPT_DIR/install.sh" "$STAGE/install.sh"
 install -m 0644 "$SCRIPT_DIR/README.txt" "$STAGE/README.txt"
 printf '%s\n' "$BUILD_ID" >"$STAGE/BUILD-ID"
