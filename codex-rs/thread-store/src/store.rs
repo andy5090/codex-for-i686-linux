@@ -8,10 +8,13 @@ use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
 use crate::ArchiveThreadsParams;
 use crate::CreateThreadParams;
+use crate::CreateThreadSectionParams;
 use crate::DeleteThreadParams;
+use crate::DeleteThreadSectionParams;
 use crate::DeleteThreadsParams;
 use crate::ItemPage;
 use crate::ListItemsParams;
+use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
 use crate::ListTurnsParams;
 use crate::LoadThreadHistoryParams;
@@ -20,12 +23,17 @@ use crate::PrepareForkParams;
 use crate::PreparedFork;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
+use crate::RenameThreadSectionParams;
 use crate::ResumeThreadParams;
+use crate::RevertThreadParams;
 use crate::SearchThreadOccurrencesParams;
 use crate::SearchThreadsParams;
 use crate::StoredModelContext;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
+use crate::StoredThreadSection;
+use crate::StoredThreadSectionsPage;
+use crate::ThreadMetadataPatch;
 use crate::ThreadOccurrenceSearchPage;
 use crate::ThreadPage;
 use crate::ThreadSearchPage;
@@ -36,6 +44,15 @@ use crate::UpdateThreadMetadataParams;
 
 /// Future returned by [`ThreadStore`] operations.
 pub type ThreadStoreFuture<'a, T> = Pin<Box<dyn Future<Output = ThreadStoreResult<T>> + Send + 'a>>;
+
+/// Why thread persistence is being requested.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PersistContext {
+    /// Standard persistence makes the thread and all queued items durable and readable.
+    Standard,
+    /// A turn is about to begin sampling after its input has been recorded.
+    TurnStart,
+}
 
 /// Storage-neutral thread persistence boundary.
 pub trait ThreadStore: Any + Send + Sync {
@@ -53,6 +70,31 @@ pub trait ThreadStore: Any + Send + Sync {
     /// Creates a new live thread.
     fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreFuture<'_, ()>;
 
+    /// Stages host-owned metadata for a thread ID reserved before Core starts the thread.
+    ///
+    /// The entry remains in memory until the first successful metadata update for that thread.
+    /// Callers must remove it if startup fails before the store opens a live thread.
+    fn stage_pending_thread_metadata(
+        &self,
+        _thread_id: ThreadId,
+        _patch: ThreadMetadataPatch,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "stage_pending_thread_metadata",
+            })
+        })
+    }
+
+    /// Removes host-owned metadata staged for a reserved thread ID.
+    fn remove_pending_thread_metadata(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "remove_pending_thread_metadata",
+            })
+        })
+    }
+
     /// Reopens an existing thread for live appends.
     fn resume_thread(&self, params: ResumeThreadParams) -> ThreadStoreFuture<'_, ()>;
 
@@ -63,7 +105,15 @@ pub trait ThreadStore: Any + Send + Sync {
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()>;
 
     /// Materializes the thread if persistence is lazy, then persists all queued items.
-    fn persist_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
+    ///
+    /// Standard persistence must complete before returning. Turn-start persistence may complete
+    /// in the background when the implementation enqueues it before returning, fences it with
+    /// subsequent flush or shutdown operations, and surfaces failures through those operations.
+    fn persist_thread(
+        &self,
+        thread_id: ThreadId,
+        context: PersistContext,
+    ) -> ThreadStoreFuture<'_, ()>;
 
     /// Flushes all queued items and returns once they are durable/readable.
     fn flush_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
@@ -109,6 +159,21 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
+    /// Reverts a paginated thread's durable history so it ends immediately before
+    /// `before_turn_id`.
+    ///
+    /// Callers must close the thread's live writer first. The logical thread id and semantic
+    /// metadata stay unchanged.
+    ///
+    /// Stores without paginated revert support can retain this default implementation.
+    fn revert_thread(&self, _params: RevertThreadParams) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "revert_thread",
+            })
+        })
+    }
+
     /// Reads a thread summary and optionally its persisted history.
     fn read_thread(&self, params: ReadThreadParams) -> ThreadStoreFuture<'_, StoredThread>;
 
@@ -122,6 +187,59 @@ pub trait ThreadStore: Any + Send + Sync {
 
     /// Lists stored threads matching the supplied filters.
     fn list_threads(&self, params: ListThreadsParams) -> ThreadStoreFuture<'_, ThreadPage>;
+
+    /// Whether this store can discover and manage independently persisted thread sections.
+    fn supports_thread_sections(&self) -> bool {
+        false
+    }
+
+    /// Lists independently persisted thread sections.
+    fn list_thread_sections(
+        &self,
+        _params: ListThreadSectionsParams,
+    ) -> ThreadStoreFuture<'_, StoredThreadSectionsPage> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "threadSection/list",
+            })
+        })
+    }
+
+    /// Creates a custom thread section with a stable, server-assigned identity.
+    fn create_thread_section(
+        &self,
+        _params: CreateThreadSectionParams,
+    ) -> ThreadStoreFuture<'_, StoredThreadSection> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "threadSection/create",
+            })
+        })
+    }
+
+    /// Renames a custom thread section, returning `None` when it does not exist.
+    fn rename_thread_section(
+        &self,
+        _params: RenameThreadSectionParams,
+    ) -> ThreadStoreFuture<'_, Option<StoredThreadSection>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "threadSection/update",
+            })
+        })
+    }
+
+    /// Deletes a custom thread section and reports whether it existed.
+    fn delete_thread_section(
+        &self,
+        _params: DeleteThreadSectionParams,
+    ) -> ThreadStoreFuture<'_, bool> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "threadSection/delete",
+            })
+        })
+    }
 
     /// Whether paginated threads can hydrate durable history through turn and item lists.
     fn supports_paginated_history_lists(&self) -> bool {
@@ -170,14 +288,18 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
-    /// Applies a literal metadata patch and returns the updated thread.
+    /// Applies a literal metadata patch and returns the updated thread when one was materialized.
+    ///
+    /// `None` means the update succeeded without materializing a thread, for example because the
+    /// implementation filtered the patch to a no-op. Callers that require a `StoredThread` must
+    /// perform a fallback read.
     ///
     /// Implementations should apply the supplied fields directly. Policy such as deciding whether
     /// an append-derived preview should be emitted belongs above the store.
     fn update_thread_metadata(
         &self,
         params: UpdateThreadMetadataParams,
-    ) -> ThreadStoreFuture<'_, StoredThread>;
+    ) -> ThreadStoreFuture<'_, Option<StoredThread>>;
 
     /// Moves a thread to, within, or out of a server-ordered section.
     fn move_thread_to_section(

@@ -59,6 +59,8 @@ identity plus endpoint-owned reliability metadata:
 ```text
 version
 stream_id
+traceparent       // optional W3C parent on the first frame of a traced request
+tracestate        // optional W3C vendor state paired with traceparent
 body              // handshake | data | ack_frame | resume | reset | heartbeat
 ack               // highest contiguous peer segment seq received
 ack_bits          // bitset for peer segment seqs after ack
@@ -114,6 +116,9 @@ Each connection follows this sequence:
 2. Wait for the `initialize` response.
 3. Send `initialized`.
 4. Call process or filesystem RPCs.
+
+Requests run sequentially by default. Pass `--concurrent-requests <COUNT>` to
+enable concurrent processing.
 
 If the server receives any notification other than `initialized`, it replies
 with an error using request id `-1`.

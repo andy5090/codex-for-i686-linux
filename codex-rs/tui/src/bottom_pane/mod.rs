@@ -27,8 +27,9 @@ use crate::bottom_pane::unified_exec_footer::UnifiedExecFooter;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
+use crate::keymap::KeymapContext;
+use crate::keymap::KeymapContextSet;
 use crate::keymap::RuntimeKeymap;
-use crate::keymap::primary_binding;
 use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableItem;
@@ -155,6 +156,7 @@ mod scroll_state;
 mod selection_popup_common;
 mod selection_row_layout;
 mod selection_tabs;
+mod startup;
 mod textarea;
 mod unified_exec_footer;
 pub(crate) use feedback_view::FeedbackNoteView;
@@ -193,6 +195,7 @@ pub(crate) enum CancellationEvent {
 use crate::bottom_pane::prompt_args::parse_slash_name;
 pub(crate) use chat_composer::ChatComposer;
 pub(crate) use chat_composer::ChatComposerConfig;
+pub(crate) use chat_composer::ComposerDraftSnapshot;
 pub(crate) use chat_composer::InputResult;
 pub(crate) use chat_composer::QueuedInputAction;
 pub(crate) use chat_composer_history::HistoryEntry;
@@ -266,6 +269,14 @@ pub(crate) struct BottomPaneParams {
 
 impl BottomPane {
     pub fn new(params: BottomPaneParams) -> Self {
+        Self::new_with_composer_config(params, ChatComposerConfig::default())
+    }
+
+    /// Construct a bottom pane with explicitly restricted composer behavior.
+    pub(crate) fn new_with_composer_config(
+        params: BottomPaneParams,
+        composer_config: ChatComposerConfig,
+    ) -> Self {
         let BottomPaneParams {
             app_event_tx,
             frame_requester,
@@ -276,12 +287,13 @@ impl BottomPane {
             animations_enabled,
             skills,
         } = params;
-        let mut composer = ChatComposer::new(
+        let mut composer = ChatComposer::new_with_config(
             has_input_focus,
             app_event_tx.clone(),
             enhanced_keys_supported,
             placeholder_text,
             disable_paste_burst,
+            composer_config,
         );
         composer.set_frame_requester(frame_requester.clone());
         let keymap = RuntimeKeymap::defaults();
@@ -398,7 +410,7 @@ impl BottomPane {
     pub fn set_keymap_bindings(&mut self, keymap: &RuntimeKeymap) {
         self.keymap = keymap.clone();
         self.composer.set_keymap_bindings(keymap);
-        let interrupt_binding = primary_binding(&keymap.chat.interrupt_turn);
+        let interrupt_binding = keymap.primary_hint(KeymapContext::Chat, "interrupt_turn");
         self.pending_input_preview
             .set_interrupt_binding(interrupt_binding);
         if let Some(status) = self.status.as_mut() {
@@ -485,7 +497,10 @@ impl BottomPane {
 
     /// Update the key hint shown next to queued messages so it matches the
     /// binding that `ChatWidget` actually listens for.
-    pub(crate) fn set_queued_message_edit_binding(&mut self, binding: Option<KeyBinding>) {
+    pub(crate) fn set_queued_message_edit_binding(
+        &mut self,
+        binding: Option<crate::key_hint::ShortcutHint>,
+    ) {
         self.pending_input_preview.set_edit_binding(binding);
         self.request_redraw();
     }
@@ -573,7 +588,7 @@ impl BottomPane {
 
     fn record_composer_activity_at(&mut self, now: Instant) {
         self.last_composer_activity_at = Some(now);
-        if !self.delayed_approval_requests.is_empty()
+        if self.has_pending_approval()
             && let Some(delay) = self.approval_prompt_delay_remaining(now)
         {
             self.request_redraw_in(delay);
@@ -581,7 +596,7 @@ impl BottomPane {
     }
 
     fn maybe_show_delayed_approval_requests_at(&mut self, now: Instant) {
-        if self.delayed_approval_requests.is_empty() || !self.view_stack.is_empty() {
+        if !self.has_pending_approval() || !self.view_stack.is_empty() {
             return;
         }
         if let Some(delay) = self.approval_prompt_delay_remaining(now) {
@@ -690,6 +705,15 @@ impl BottomPane {
                 self.request_redraw_in(ChatComposer::recommended_paste_flush_delay());
             }
             input_result
+        }
+    }
+
+    /// Return the contexts whose ordinary handlers can consume the next key.
+    pub(crate) fn keymap_contexts(&self) -> KeymapContextSet {
+        if let Some(view) = self.view_stack.last() {
+            view.keymap_contexts()
+        } else {
+            self.composer.keymap_contexts()
         }
     }
 
@@ -871,10 +895,6 @@ impl BottomPane {
         self.composer.cursor()
     }
 
-    pub(crate) fn composer_draft_snapshot(&self) -> chat_composer::ComposerDraftSnapshot {
-        self.composer.draft_snapshot()
-    }
-
     #[cfg(test)]
     pub(crate) fn composer_text_elements(&self) -> Vec<TextElement> {
         self.composer.text_elements()
@@ -1047,7 +1067,10 @@ impl BottomPane {
                 }
                 if let Some(status) = self.status.as_mut() {
                     status.set_interrupt_hint_visible(/*visible*/ true);
-                    status.set_interrupt_binding(primary_binding(&self.keymap.chat.interrupt_turn));
+                    status.set_interrupt_binding(
+                        self.keymap
+                            .primary_hint(KeymapContext::Chat, "interrupt_turn"),
+                    );
                 }
                 self.sync_status_inline_message();
                 self.request_redraw();
@@ -1077,7 +1100,10 @@ impl BottomPane {
                 self.animations_enabled,
             ));
             if let Some(status) = self.status.as_mut() {
-                status.set_interrupt_binding(primary_binding(&self.keymap.chat.interrupt_turn));
+                status.set_interrupt_binding(
+                    self.keymap
+                        .primary_hint(KeymapContext::Chat, "interrupt_turn"),
+                );
             }
             self.sync_status_inline_message();
             self.request_redraw();
@@ -1101,6 +1127,11 @@ impl BottomPane {
         self.context_window_used_tokens = used_tokens;
         self.composer
             .set_context_window(percent, self.context_window_used_tokens);
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_context_window_pending(&mut self, pending: bool) {
+        self.composer.set_context_window_pending(pending);
         self.request_redraw();
     }
 
@@ -1553,7 +1584,7 @@ impl BottomPane {
             self.has_input_focus,
             self.enhanced_keys_supported,
             self.disable_paste_burst,
-            self.keymap.list.clone(),
+            self.keymap.clone(),
         );
         self.pause_status_timer_for_modal();
         self.set_composer_input_enabled(

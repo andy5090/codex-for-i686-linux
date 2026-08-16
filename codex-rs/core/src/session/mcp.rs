@@ -1,5 +1,6 @@
 use super::mcp_refresh::McpRefreshInvalidationGuard;
 use super::*;
+use crate::tools::sandboxing::executor_windows_sandbox_level;
 use codex_exec_server::ExecutorCapabilityDiscoveryCache;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::FileSystemSandboxContext;
@@ -9,6 +10,7 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ElicitationReviewRequest;
 use codex_mcp::ElicitationReviewer;
 use codex_mcp::ElicitationReviewerHandle;
+use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -19,8 +21,10 @@ use codex_protocol::mcp_approval_meta::APPROVALS_REVIEWER_KEY as MCP_ELICITATION
 use codex_protocol::mcp_approval_meta::CONNECTOR_DESCRIPTION_KEY as MCP_ELICITATION_CONNECTOR_DESCRIPTION_KEY;
 use codex_protocol::mcp_approval_meta::CONNECTOR_ID_KEY as MCP_ELICITATION_CONNECTOR_ID_KEY;
 use codex_protocol::mcp_approval_meta::CONNECTOR_NAME_KEY as MCP_ELICITATION_CONNECTOR_NAME_KEY;
+use codex_protocol::mcp_approval_meta::PERSIST_KEY as MCP_ELICITATION_PERSIST_KEY;
 use codex_protocol::mcp_approval_meta::REQUEST_TYPE_APPROVAL_REQUEST as MCP_ELICITATION_REQUEST_TYPE_APPROVAL_REQUEST;
 use codex_protocol::mcp_approval_meta::REQUEST_TYPE_KEY as MCP_ELICITATION_REQUEST_TYPE_KEY;
+use codex_protocol::mcp_approval_meta::STRICT_AUTO_REVIEW_KEY as MCP_ELICITATION_STRICT_AUTO_REVIEW_KEY;
 use codex_protocol::mcp_approval_meta::TOOL_DESCRIPTION_KEY as MCP_ELICITATION_TOOL_DESCRIPTION_KEY;
 use codex_protocol::mcp_approval_meta::TOOL_NAME_KEY as MCP_ELICITATION_TOOL_NAME_KEY;
 use codex_protocol::mcp_approval_meta::TOOL_PARAMS_KEY as MCP_ELICITATION_TOOL_PARAMS_KEY;
@@ -92,12 +96,14 @@ impl Session {
         config: &Config,
     ) -> (McpConfig, McpRuntimeContext) {
         let originator = self.originator().await;
-        let windows_sandbox_level = self
-            .state
-            .lock()
-            .await
-            .session_configuration
-            .windows_sandbox_level;
+        let (windows_sandbox_level, session_source, host_fallback_cwd) = {
+            let state = self.state.lock().await;
+            (
+                state.session_configuration.windows_sandbox_level,
+                state.session_configuration.session_source.clone(),
+                state.session_configuration.cwd().clone(),
+            )
+        };
         let environments = self.services.turn_environments.snapshot().await;
         let selected_capability_roots = self
             .resolve_selected_capability_roots_for_step(&environments)
@@ -119,20 +125,22 @@ impl Session {
                 config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
-                &originator,
+                McpThreadIdentity {
+                    session_source: &session_source,
+                    originator: &originator,
+                },
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
             )
             .await
             .config;
-        let local_stdio_fallback_cwd = environments
-            .primary()
-            .and_then(|environment| environment.cwd().to_abs_path().ok())
+        let local_process_cwd = environments
+            .local_environment_cwd()
             .map(|cwd| cwd.to_path_buf())
-            .unwrap_or_else(|| config.cwd.to_path_buf());
+            .unwrap_or_else(|| host_fallback_cwd.to_path_buf());
         let runtime_context = McpRuntimeContext::new(
             self.services.turn_environments.environment_manager(),
-            local_stdio_fallback_cwd,
+            local_process_cwd,
         );
         (mcp_config, runtime_context)
     }
@@ -196,7 +204,10 @@ impl Session {
                     &desired.config,
                     &self.services.mcp_thread_init,
                     &self.services.thread_extension_data,
-                    &desired.originator,
+                    McpThreadIdentity {
+                        session_source: &desired.session_source,
+                        originator: &desired.originator,
+                    },
                     &ready_selected_capability_roots,
                     executor_capability_discovery.as_deref(),
                 )
@@ -250,7 +261,10 @@ impl Session {
                 &desired.config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
-                &desired.originator,
+                McpThreadIdentity {
+                    session_source: &desired.session_source,
+                    originator: &desired.originator,
+                },
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
             )
@@ -289,11 +303,32 @@ impl Session {
         {
             self.mark_mcp_runtime_dirty();
         }
+
+        let recovered_oauth_servers = self
+            .services
+            .mcp_runtime
+            .updated_oauth_credentials_after_auth_failure()
+            .await;
+        if !recovered_oauth_servers.is_empty()
+            && let Ok(_refresh) = self.mcp_refresh.acquire().await
+            && self
+                .services
+                .mcp_runtime
+                .has_authentication_failed_servers(&recovered_oauth_servers)
+                .await
+        {
+            self.mark_mcp_runtime_dirty();
+        }
         self.refresh_mcp_if_dirty().await;
+        let required_servers = required_servers
+            .iter()
+            .chain(&recovered_oauth_servers)
+            .cloned()
+            .collect::<Vec<_>>();
         if let Some(binding) = self
             .services
             .mcp_runtime
-            .current_binding_with_required_servers(required_servers)
+            .current_binding_with_required_servers(&required_servers)
             .await
         {
             return binding;
@@ -314,10 +349,28 @@ impl Session {
         environments: &TurnEnvironmentSnapshot,
         windows_sandbox_level: WindowsSandboxLevel,
     ) -> Option<Arc<ExecutorCapabilityDiscoverySnapshot>> {
-        let restricted_file_system = !config
-            .permissions
-            .file_system_sandbox_policy()
-            .has_full_disk_read_access();
+        // Capability roots can currently be selected independently of turn environments, so a
+        // root may be ready when there is no primary `TurnEnvironment`. Keep using the thread
+        // policy in that case so restricted discovery fails closed below. Once every selected
+        // root belongs to a thread/environment attachment whose `EnvironmentConfig` is installed
+        // before the root becomes ready, discovery can use the root owner's policy and this
+        // fallback can be removed.
+        let restricted_file_system = environments.primary().map_or_else(
+            || {
+                !config
+                    .permissions
+                    .file_system_sandbox_policy()
+                    .has_full_disk_read_access()
+            },
+            |_| {
+                environments.turn_environments().any(|environment| {
+                    !environment
+                        .permission_profile()
+                        .file_system_sandbox_policy()
+                        .has_full_disk_read_access()
+                })
+            },
+        );
         if !restricted_file_system
             && !config
                 .features
@@ -330,15 +383,16 @@ impl Session {
                 .turn_environments()
                 .map(|environment| {
                     let mut sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
-                        config.permissions.permission_profile().clone(),
+                        environment.permission_profile().clone(),
                         environment.cwd().clone(),
                     );
                     sandbox.workspace_roots = environment.workspace_roots().to_vec();
-                    sandbox.windows_sandbox_level = windows_sandbox_level;
+                    sandbox.windows_sandbox_level =
+                        executor_windows_sandbox_level(windows_sandbox_level, environment.cwd());
                     sandbox.windows_sandbox_private_desktop =
                         config.permissions.windows_sandbox_private_desktop;
                     sandbox.use_legacy_landlock = config.features.use_legacy_landlock();
-                    (environment.environment_id.clone(), sandbox)
+                    (environment.selection.environment_id.clone(), sandbox)
                 })
                 .collect::<HashMap<_, _>>()
         } else {
@@ -368,11 +422,14 @@ impl Session {
             })
             .cloned()
             .collect::<Vec<_>>();
-        Some(Arc::new(
-            cache
-                .snapshot(&selected_capability_roots, &sandbox_contexts)
-                .await,
-        ))
+        let discovery = cache
+            .snapshot(&selected_capability_roots, &sandbox_contexts)
+            .await;
+        if cache.take_recovered_discovery() {
+            // Root selection is unchanged, but recovered manifests can change MCP servers.
+            self.mark_mcp_runtime_dirty();
+        }
+        Some(Arc::new(discovery))
     }
 
     pub(crate) async fn resolve_selected_capability_roots_for_step(
@@ -391,7 +448,7 @@ impl Session {
             .chain(
                 environments
                     .turn_environments()
-                    .flat_map(|environment| environment.environment.selected_capability_roots()),
+                    .flat_map(|environment| environment.config().selected_capability_roots.clone()),
             )
             .enumerate()
         {
@@ -555,26 +612,6 @@ impl Session {
             .await
     }
 
-    pub(crate) async fn set_openai_form_elicitation_support(
-        &self,
-        supported: bool,
-    ) -> anyhow::Result<()> {
-        if self
-            .services
-            .supports_openai_form_elicitation
-            .load(std::sync::atomic::Ordering::Relaxed)
-            == supported
-        {
-            return Ok(());
-        }
-
-        self.services
-            .supports_openai_form_elicitation
-            .store(supported, std::sync::atomic::Ordering::Relaxed);
-        self.request_mcp_runtime_refresh();
-        Ok(())
-    }
-
     pub(crate) async fn refresh_mcp_servers_now(
         &self,
         turn_context: &TurnContext,
@@ -615,7 +652,10 @@ impl Session {
                 refresh_config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
-                &turn_context.originator,
+                McpThreadIdentity {
+                    session_source: &turn_context.session_source,
+                    originator: &turn_context.originator,
+                },
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
             )
@@ -649,7 +689,7 @@ async fn review_guardian_mcp_elicitation(
     session: Arc<Session>,
     request: ElicitationReviewRequest,
 ) -> anyhow::Result<Option<ElicitationResponse>> {
-    let Some((turn_context, _cancellation_token)) =
+    let Some((turn_context, cancellation_token)) =
         session.active_turn_context_and_cancellation_token().await
     else {
         return Ok(None);
@@ -658,6 +698,101 @@ async fn review_guardian_mcp_elicitation(
     let Some(mcp_config) = session.services.mcp_runtime.current_config() else {
         return Ok(None);
     };
+
+    if matches!(
+        request
+            .elicitation
+            .meta()
+            .and_then(|meta| meta.get(MCP_ELICITATION_STRICT_AUTO_REVIEW_KEY)),
+        Some(Value::Bool(true))
+    ) {
+        let connector_id = elicitation_connector_id(&request.elicitation);
+        let trusted_guardian_request = if request.server_name == CODEX_APPS_MCP_SERVER_NAME {
+            let Some(call_id) = request
+                .elicitation
+                .meta()
+                .and_then(|meta| meta.get(MCP_TOOL_CODEX_APPS_META_KEY))
+                .and_then(Value::as_object)
+                .and_then(|meta| meta.get("call_id"))
+                .and_then(Value::as_str)
+            else {
+                return Ok(None);
+            };
+            let Some((Some(invocation), metadata)) = session
+                .mcp_tool_approval_metadata(&turn_context.sub_id, call_id)
+                .await
+            else {
+                return Ok(None);
+            };
+            if invocation.server != request.server_name
+                || connector_id != metadata.connector_id.as_deref()
+                || request
+                    .elicitation
+                    .meta()
+                    .and_then(|meta| metadata_str(meta, MCP_ELICITATION_TOOL_NAME_KEY))
+                    != Some(invocation.tool.as_str())
+            {
+                return Ok(None);
+            }
+            Some(
+                crate::mcp_tool_call::build_guardian_mcp_tool_review_request(
+                    call_id,
+                    &invocation,
+                    Some(&metadata),
+                ),
+            )
+        } else {
+            None
+        };
+        if !turn_context
+            .config
+            .features
+            .enabled(Feature::GuardianApproval)
+            || mcp_config
+                .config_layer_stack
+                .requirements()
+                .approvals_reviewer
+                .can_set(&ApprovalsReviewer::AutoReview)
+                .is_err()
+            || crate::connectors::mcp_approvals_reviewer_from_layers(
+                &mcp_config.config_layer_stack,
+                ApprovalsReviewer::AutoReview,
+                Some(turn_context.model_info.slug.as_str()),
+                request.server_name.as_str(),
+                connector_id,
+            ) != ApprovalsReviewer::AutoReview
+            || request
+                .elicitation
+                .meta()
+                .is_some_and(|meta| meta.contains_key(MCP_ELICITATION_PERSIST_KEY))
+        {
+            return Ok(None);
+        }
+
+        let GuardianElicitationReview::ApprovalRequest(guardian_request) =
+            guardian_elicitation_review_request(&request)
+        else {
+            return Ok(None);
+        };
+        let guardian_request = trusted_guardian_request.unwrap_or(*guardian_request);
+        let decision = crate::guardian::review_approval_request_with_cancel(
+            &session,
+            &turn_context,
+            crate::guardian::new_guardian_review_id(),
+            guardian_request,
+            /*retry_reason*/ None,
+            crate::guardian::GuardianReviewOptions {
+                plugin_attribution_override: None,
+                approval_request_source: codex_analytics::GuardianApprovalRequestSource::MainTurn,
+                external_cancel: Some(cancellation_token),
+            },
+        )
+        .await;
+
+        return Ok(matches!(decision, ReviewDecision::Approved)
+            .then(|| mcp_elicitation_response_from_guardian_decision(decision)));
+    }
+
     let approval_policy = mcp_config.approval_policy.value();
     match approval_policy {
         AskForApproval::Never => {
@@ -688,9 +823,11 @@ async fn review_guardian_mcp_elicitation(
         AskForApproval::OnRequest | AskForApproval::UnlessTrusted | AskForApproval::Granular(_) => {
         }
     }
+
     let approvals_reviewer = crate::connectors::mcp_approvals_reviewer_from_layers(
         &mcp_config.config_layer_stack,
         mcp_config.approvals_reviewer,
+        Some(turn_context.model_info.slug.as_str()),
         request.server_name.as_str(),
         elicitation_connector_id(&request.elicitation),
     );
@@ -718,7 +855,7 @@ async fn review_guardian_mcp_elicitation(
         &turn_context,
         review_id.clone(),
         guardian_request,
-        /*retry_reason*/ None,
+        Default::default(),
     )
     .await;
     Ok(Some(mcp_elicitation_response_from_guardian_decision(
@@ -877,6 +1014,7 @@ fn mcp_elicitation_response_from_guardian_decision(
     match decision {
         ReviewDecision::Approved
         | ReviewDecision::ApprovedForSession
+        | ReviewDecision::ApprovedMcpPolicyAmendment
         | ReviewDecision::ApprovedExecpolicyAmendment { .. }
         | ReviewDecision::NetworkPolicyAmendment { .. } => ElicitationResponse {
             action: ElicitationAction::Accept,
