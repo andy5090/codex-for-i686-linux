@@ -22,7 +22,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/ziglang"
-          "$RUNNER_TEMP/ziglang/bin/pip" install ziglang==0.15.2
+          "$RUNNER_TEMP/ziglang/bin/pip" install ziglang==0.13.0
           zig_binary="$("$RUNNER_TEMP/ziglang/bin/python" -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent / "zig")')"
           echo "$(dirname "$zig_binary")" >> "$GITHUB_PATH"
           cargo install cargo-zigbuild --locked
