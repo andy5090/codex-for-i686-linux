@@ -98,11 +98,25 @@ if [ ! -f "$LIBCAP_ROOT/lib/libcap.a" ]; then
     trap "rm -rf \"$LIBCAP_BUILD\"" EXIT HUP INT TERM
     cd "$LIBCAP_BUILD"
     LIBCAP_ARCHIVE="libcap-$LIBCAP_VERSION.tar.xz"
-    curl -fsSLO \
-        --connect-timeout 30 \
-        --retry 5 \
-        --retry-all-errors \
-        "https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/$LIBCAP_ARCHIVE"
+    for libcap_url in \
+        "https://www.kernel.org/pub/linux/libs/security/linux-privs/libcap2/$LIBCAP_ARCHIVE" \
+        "https://deb.debian.org/debian/pool/main/libc/libcap2/libcap2_${LIBCAP_VERSION}.orig.tar.xz"
+    do
+        if curl -fsSL \
+            --connect-timeout 30 \
+            --retry 2 \
+            --retry-all-errors \
+            "$libcap_url" \
+            -o "$LIBCAP_ARCHIVE.tmp"; then
+            mv "$LIBCAP_ARCHIVE.tmp" "$LIBCAP_ARCHIVE"
+            break
+        fi
+    done
+    rm -f "$LIBCAP_ARCHIVE.tmp"
+    if [ ! -f "$LIBCAP_ARCHIVE" ]; then
+        echo "Could not download $LIBCAP_ARCHIVE." >&2
+        exit 1
+    fi
     printf "%s  %s\n" "$LIBCAP_SHA256" "$LIBCAP_ARCHIVE" | sha256sum -c -
     tar -xf "$LIBCAP_ARCHIVE"
     make \
