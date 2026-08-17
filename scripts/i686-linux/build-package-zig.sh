@@ -10,6 +10,9 @@ BUILD_JOBS="${CODEX_I686_BUILD_JOBS:-2}"
 RIPGREP_VERSION="15.2.0"
 LIBCAP_VERSION="2.78"
 LIBCAP_SHA256="0d621e562fd932ccf67b9660fb018e468a683d7b827541df27813228c996bb11"
+ALPINE_VERSION="v3.22"
+ALPINE_GCC_VERSION="14.2.0-r6"
+ALPINE_GCC_SHA256="65a672a52500b7fecb27440aa1bc830d49d34614b63b8cabb283169e750a3142"
 ZIG_CC="$SCRIPT_DIR/zig-cc-i686.py"
 ZIG_LINKER="$SCRIPT_DIR/zig-linker-i686.sh"
 ELF_AR="$SCRIPT_DIR/elf-ar.sh"
@@ -159,6 +162,42 @@ PY
     trap - EXIT HUP INT TERM
 fi
 
+LIBATOMIC_ROOT="$TARGET_DIR/i686-libatomic-$ALPINE_GCC_VERSION"
+if [ ! -f "$LIBATOMIC_ROOT/lib/libatomic.a" ]; then
+    LIBATOMIC_BUILD=$(mktemp -d)
+    trap 'rm -rf "$LIBATOMIC_BUILD"' EXIT HUP INT TERM
+    cd "$LIBATOMIC_BUILD"
+    ALPINE_GCC_ARCHIVE="gcc-$ALPINE_GCC_VERSION.apk"
+    for alpine_url in \
+        "https://dl-cdn.alpinelinux.org/alpine/$ALPINE_VERSION/main/x86/$ALPINE_GCC_ARCHIVE" \
+        "https://dl-4.alpinelinux.org/alpine/$ALPINE_VERSION/main/x86/$ALPINE_GCC_ARCHIVE"
+    do
+        if curl -fsSL \
+            --connect-timeout 30 \
+            --retry 2 \
+            --retry-all-errors \
+            "$alpine_url" \
+            -o "$ALPINE_GCC_ARCHIVE.tmp"; then
+            mv "$ALPINE_GCC_ARCHIVE.tmp" "$ALPINE_GCC_ARCHIVE"
+            break
+        fi
+    done
+    rm -f "$ALPINE_GCC_ARCHIVE.tmp"
+    if [ ! -f "$ALPINE_GCC_ARCHIVE" ]; then
+        echo "Could not download $ALPINE_GCC_ARCHIVE." >&2
+        exit 1
+    fi
+    if [ "$(sha256_file "$ALPINE_GCC_ARCHIVE")" != "$ALPINE_GCC_SHA256" ]; then
+        echo "Alpine GCC checksum verification failed." >&2
+        exit 1
+    fi
+    tar -xzf "$ALPINE_GCC_ARCHIVE" usr/lib/libatomic.a
+    mkdir -p "$LIBATOMIC_ROOT/lib"
+    install -m 0644 usr/lib/libatomic.a "$LIBATOMIC_ROOT/lib/libatomic.a"
+    rm -rf "$LIBATOMIC_BUILD"
+    trap - EXIT HUP INT TERM
+fi
+
 export AR_i686_unknown_linux_musl="$ELF_AR"
 export CARGO_BUILD_JOBS="$BUILD_JOBS"
 export CARGO_PROFILE_RELEASE_DEBUG=none
@@ -172,7 +211,7 @@ export OPENSSL_STATIC=1
 export PKG_CONFIG_ALLOW_CROSS=1
 export PKG_CONFIG_PATH="$LIBCAP_ROOT/lib/pkgconfig"
 export RANLIB_i686_unknown_linux_musl="$ELF_RANLIB"
-export RUSTFLAGS="-C target-cpu=pentium4"
+export RUSTFLAGS="-C target-cpu=pentium4 -L native=$LIBATOMIC_ROOT/lib"
 export SOURCE_DATE_EPOCH
 export TARGET_PKG_CONFIG_ALLOW_CROSS=1
 export TARGET_PKG_CONFIG_LIBDIR="$LIBCAP_ROOT/lib/pkgconfig"
