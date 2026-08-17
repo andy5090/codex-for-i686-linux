@@ -1,0 +1,93 @@
+name: i686 release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: i686-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Zig build tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/ziglang"
+          "$RUNNER_TEMP/ziglang/bin/pip" install ziglang==0.15.2
+          zig_binary="$("$RUNNER_TEMP/ziglang/bin/python" -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent / "zig")')"
+          echo "$(dirname "$zig_binary")" >> "$GITHUB_PATH"
+          cargo install cargo-zigbuild --locked
+
+      - name: Build i686 package
+        run: ./scripts/i686-linux/build-package-zig.sh
+
+      - name: Stage and verify release assets
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          archive="$(find dist -maxdepth 1 -type f -name 'codex-i686-unknown-linux-musl-*.tar.gz' -print -quit)"
+          test -n "$archive"
+          cp "$archive" release-assets/codex-i686-unknown-linux-musl.tar.gz
+          (
+            cd release-assets
+            sha256sum codex-i686-unknown-linux-musl.tar.gz \
+              > codex-i686-unknown-linux-musl.tar.gz.sha256
+          )
+          cp scripts/i686-linux/install-codex-i686.sh \
+            release-assets/install-codex-i686.sh
+
+          package_root="$RUNNER_TEMP/i686-package"
+          mkdir "$package_root"
+          tar -xzf release-assets/codex-i686-unknown-linux-musl.tar.gz \
+            -C "$package_root"
+          package_dir="$(find "$package_root" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -x "$package_dir/bin/codex"
+          test -x "$package_dir/bin/codex-i686-update"
+          test -x "$package_dir/codex-path/rg"
+          test -x "$package_dir/codex-resources/bwrap"
+          file "$package_dir/bin/codex" | grep 'ELF 32-bit'
+          file "$package_dir/bin/codex" | grep 'statically linked'
+          "$package_dir/bin/codex" --version
+          "$package_dir/codex-path/rg" --version
+          "$package_dir/codex-resources/bwrap" --version
+
+      - name: Publish i686-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view i686-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh api \
+              --method PATCH \
+              "repos/$GITHUB_REPOSITORY/git/refs/tags/i686-latest" \
+              -f sha="$GITHUB_SHA" \
+              -F force=true
+            gh release edit i686-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Codex CLI for i686 Linux — latest test build" \
+              --prerelease \
+              --notes "Latest i686 Linux build from $GITHUB_SHA. Existing installations can update with \`codex-i686-update\`."
+          else
+            gh release create i686-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Codex CLI for i686 Linux — latest test build" \
+              --prerelease \
+              --notes "Latest i686 Linux build from $GITHUB_SHA. Existing installations can update with \`codex-i686-update\`."
+          fi
+          gh release upload i686-latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            release-assets/codex-i686-unknown-linux-musl.tar.gz \
+            release-assets/codex-i686-unknown-linux-musl.tar.gz.sha256 \
+            release-assets/install-codex-i686.sh
