@@ -99,6 +99,9 @@ if [ ! -f "$LIBCAP_ROOT/lib/libcap.a" ]; then
     cd "$LIBCAP_BUILD"
     LIBCAP_ARCHIVE="libcap-$LIBCAP_VERSION.tar.xz"
     curl -fsSLO \
+        --connect-timeout 30 \
+        --retry 5 \
+        --retry-all-errors \
         "https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/$LIBCAP_ARCHIVE"
     printf "%s  %s\n" "$LIBCAP_SHA256" "$LIBCAP_ARCHIVE" | sha256sum -c -
     tar -xf "$LIBCAP_ARCHIVE"

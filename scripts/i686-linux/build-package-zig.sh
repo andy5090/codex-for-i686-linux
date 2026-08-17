@@ -89,6 +89,9 @@ if [ ! -f "$LIBCAP_ROOT/lib/libcap.a" ]; then
     cd "$LIBCAP_BUILD"
     LIBCAP_ARCHIVE="libcap-$LIBCAP_VERSION.tar.xz"
     curl -fsSLO \
+        --connect-timeout 30 \
+        --retry 5 \
+        --retry-all-errors \
         "https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/$LIBCAP_ARCHIVE"
     if [ "$(sha256_file "$LIBCAP_ARCHIVE")" != "$LIBCAP_SHA256" ]; then
         echo "libcap checksum verification failed." >&2
